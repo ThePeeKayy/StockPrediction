@@ -11,9 +11,6 @@ import pickle
 import os
 import glob
 
-# Force CPU usage
-torch.set_num_threads(1)  # Optional: limit CPU threads
-os.environ['CUDA_VISIBLE_DEVICES'] = ''  # Hide GPU devices
 
 def compute_indicators(df):
     df['SMA_20'] = df['value'].rolling(20, min_periods=1).mean()
@@ -95,8 +92,8 @@ def train_model(training, validation, model_name="tft_model"):
     val_loader = validation.to_dataloader(train=False, batch_size=128, num_workers=0)
     
     model = TemporalFusionTransformer.from_dataset(
-        training, learning_rate=0.0005, hidden_size=16, attention_head_size=2, dropout=0.2,          
-        hidden_continuous_size=8, output_size=5,
+        training, learning_rate=0.0005, hidden_size=8, attention_head_size=2, dropout=0.2,          
+        hidden_continuous_size=4, output_size=5,
         loss=QuantileLoss(quantiles=[0.1, 0.25, 0.5, 0.75, 0.9]),
         reduce_on_plateau_patience=4, optimizer="AdamW",
     )
@@ -123,15 +120,37 @@ def train_model(training, validation, model_name="tft_model"):
     return model
 
 def predict_stock(ticker, model_name="tft_model", data_folder="./tiingo_data"):
-    # Load model and ensure it's on CPU
-    model = TemporalFusionTransformer.load_from_checkpoint(
-        './TFTfiles/tft_model-epoch=7-val_loss=12.2669.ckpt',
-        map_location='cpu'  # Force CPU loading
-    )
-    model.eval()  # Set to evaluation mode
+    checkpoint_path = './TFTfiles/tft_model-epoch=16-val_loss=9.4569.ckpt'
     
     with open(f'./scalers/training_{model_name}.pkl', 'rb') as f:
         training_dataset = pickle.load(f)
+    
+ 
+        
+    try:
+            checkpoint = torch.load(checkpoint_path, map_location='cpu')
+            
+            model = TemporalFusionTransformer.from_dataset(
+                training_dataset,
+                learning_rate=0.0005,
+                hidden_size=8,
+                attention_head_size=2,
+                dropout=0.2,
+                hidden_continuous_size=4,
+                output_size=5,
+                loss=QuantileLoss(quantiles=[0.1, 0.25, 0.5, 0.75, 0.9]),
+                reduce_on_plateau_patience=4,
+                optimizer="AdamW",
+            )
+            
+            model.load_state_dict(checkpoint['state_dict'])
+            
+    except Exception as e2:
+            print(f"✗ Method 2 FAILED: {e2}")
+    
+    
+    model.eval()
+    model = model.cpu()
     
     all_data = load_data(data_folder)
     full_data = prepare_data(all_data)
@@ -148,7 +167,6 @@ def predict_stock(ticker, model_name="tft_model", data_folder="./tiingo_data"):
     with torch.no_grad():
         predictions = model.predict(pred_loader, mode='prediction')
     
-    # Ensure predictions are on CPU
     predictions = predictions.detach().cpu().numpy().squeeze()
     predictions = predictions[:, 2] if predictions.ndim > 1 and predictions.shape[1] == 5 else predictions
     
